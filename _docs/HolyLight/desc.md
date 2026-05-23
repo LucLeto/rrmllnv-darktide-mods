@@ -18,12 +18,12 @@ Holy Light adds a glow effect above pickups and crates in missions, expeditions,
 [*]Height offset - numeric. Default 0.10. Range 0.10 to 2.00. Step 0.05. Controls how high above the item the glow effect is spawned.[/*]
 [*]Modes
 [list=1]
-[*]Show in missions - on/off. Default on. Glow in standard mission server runs (non-Havoc).[/*]
-[*]Show in Havoc missions - on/off. Default on. Glow in Havoc mission server runs.[/*]
-[*]Show in Expeditions - on/off. Default on. Glow during expedition runs.[/*]
-[*]In safe zone - on/off. Default off. Nested under Show in Expeditions. Glow in the expedition safe zone only when Show in Expeditions is enabled.[/*]
-[*]Show in Mortis Trials - on/off. Default on. Glow in Mortis Trials (survival game mode).[/*]
-[*]Show in Psykhanium - on/off. Default off. Glow in the training shooting range (shooting_range / tg_shooting_range).[/*]
+[*]Show in missions - on/off. Default on. Glow in regular missions.[/*]
+[*]Show in Havoc missions - on/off. Default on. Glow in Havoc missions.[/*]
+[*]Show in Expeditions - on/off. Default on. Glow during expeditions.[/*]
+[*]In safe zone - on/off. Default off. Sub-option under Show in Expeditions. Glow in the expedition safe zone.[/*]
+[*]Show in Mortis Trials - on/off. Default on. Glow in Mortis Trials.[/*]
+[*]Show in Psykhanium - on/off. Default off. Glow in the Psykhanium training area.[/*]
 [/list]
 [/*]
 [/list]
@@ -53,7 +53,7 @@ Holy Light adds a glow effect above pickups and crates in missions, expeditions,
 
 [b][size=3]Events[/size][/b]
 [list]
-[*]Glow on skulls - on/off. Default on. Glow on tainted skull pickups (skulls_01_pickup) from the Skulls live event.[/*]
+[*]Glow on skulls - on/off. Default on. Glow on skull collectibles during the Skulls live event.[/*]
 [/list]
 
 [url=https://www.nexusmods.com/profile/RRMLLNV/mods?gameId=4943][img]https://raw.githubusercontent.com/rrmllnv/darktide-mods/master/_images/all-mods.png[/img][/url]
