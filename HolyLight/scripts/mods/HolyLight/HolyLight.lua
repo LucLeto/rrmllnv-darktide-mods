@@ -99,8 +99,172 @@ local EXPEDITION_LUGGABLE_PICKUP_TYPES = {
 	expedition_explosive_luggable_01 = true,
 }
 
+local EXPEDITION_GAME_MODE_NAME = "expedition"
+local MORTIS_GAME_MODE_NAME = "survival"
+local MISSION_SERVER_HOST_TYPE = "mission_server"
+
+local PSYKHANIUM_MISSION_NAMES = {
+	tg_shooting_range = true,
+}
+
+local PSYKHANIUM_GAME_MODE_NAMES = {
+	shooting_range = true,
+}
+
+local function safe_game_mode_name()
+	local game_mode_manager = Managers.state and Managers.state.game_mode
+
+	if not game_mode_manager or not game_mode_manager.game_mode_name then
+		return nil
+	end
+
+	local ok, game_mode_name = pcall(game_mode_manager.game_mode_name, game_mode_manager)
+
+	return ok and game_mode_name or nil
+end
+
+local function safe_mission_name()
+	local mission_manager = Managers.state and Managers.state.mission
+
+	if not mission_manager or not mission_manager.mission_name then
+		return nil
+	end
+
+	local ok, mission_name = pcall(mission_manager.mission_name, mission_manager)
+
+	return ok and mission_name or nil
+end
+
+local function is_psykhanium()
+	local game_mode_name = safe_game_mode_name()
+
+	if game_mode_name and PSYKHANIUM_GAME_MODE_NAMES[game_mode_name] then
+		return true
+	end
+
+	local mission_name = safe_mission_name()
+
+	if mission_name and PSYKHANIUM_MISSION_NAMES[mission_name] then
+		return true
+	end
+
+	return false
+end
+
+local function is_in_mission_server()
+	local multiplayer_session = Managers.multiplayer_session
+
+	if not multiplayer_session or not multiplayer_session.host_type then
+		return false
+	end
+
+	local ok, host_type = pcall(multiplayer_session.host_type, multiplayer_session)
+
+	return ok and host_type == MISSION_SERVER_HOST_TYPE
+end
+
+local function get_mechanism_data()
+	local mechanism = Managers.mechanism and Managers.mechanism:current_mechanism()
+
+	if not mechanism or not mechanism.mechanism_data then
+		return nil
+	end
+
+	local ok, mechanism_data = pcall(mechanism.mechanism_data, mechanism)
+
+	return ok and mechanism_data or nil
+end
+
+local function is_mortis_trials()
+	return safe_game_mode_name() == MORTIS_GAME_MODE_NAME
+end
+
+local function is_expedition()
+	return safe_game_mode_name() == EXPEDITION_GAME_MODE_NAME
+end
+
+local function is_havoc_mission()
+	if not is_in_mission_server() then
+		return false
+	end
+
+	local mechanism_data = get_mechanism_data()
+
+	return mechanism_data and mechanism_data.havoc_data ~= nil
+end
+
+local function is_standard_mission()
+	if not is_in_mission_server() then
+		return false
+	end
+
+	local mechanism_data = get_mechanism_data()
+
+	if not mechanism_data then
+		return false
+	end
+
+	return mechanism_data.havoc_data == nil
+end
+
+local function is_expedition_safe_zone()
+	local game_mode_manager = Managers.state and Managers.state.game_mode
+
+	if not game_mode_manager or not game_mode_manager.game_mode_name then
+		return false
+	end
+
+	local ok_name, game_mode_name = pcall(game_mode_manager.game_mode_name, game_mode_manager)
+
+	if not ok_name or game_mode_name ~= EXPEDITION_GAME_MODE_NAME then
+		return false
+	end
+
+	local game_mode = game_mode_manager.game_mode and game_mode_manager:game_mode()
+
+	if not game_mode or not game_mode.in_safe_zone then
+		return false
+	end
+
+	local ok_safe_zone, in_safe_zone = pcall(game_mode.in_safe_zone, game_mode)
+
+	return ok_safe_zone and in_safe_zone == true
+end
+
+local function effects_allowed_in_current_zone()
+	if is_psykhanium() then
+		return mod:get("show_in_psykhanium") ~= false
+	end
+
+	if is_mortis_trials() then
+		return mod:get("show_in_mortis_trials") ~= false
+	end
+
+	if is_expedition() then
+		if mod:get("show_in_expeditions") == false then
+			return false
+		end
+
+		if is_expedition_safe_zone() then
+			return mod:get("show_in_expedition_safe_zone") ~= false
+		end
+
+		return true
+	end
+
+	if is_havoc_mission() then
+		return mod:get("show_in_havoc_missions") ~= false
+	end
+
+	if is_standard_mission() then
+		return mod:get("show_in_missions") ~= false
+	end
+
+	return true
+end
+
 local function mod_enabled()
-	return mod:get("enable_mod") ~= false
+	return mod:get("enable_mod") ~= false and effects_allowed_in_current_zone()
 end
 
 local function pickup_type_enabled(pickup_type)

@@ -24,6 +24,45 @@ return {
 						decimals_number = 2,
 						interval = 0.05,
 					},
+					{
+						setting_id = "modes_group",
+						type = "group",
+						text = mod:localize("modes_group"),
+						sub_widgets = {
+							{
+								setting_id = "show_in_missions",
+								type = "checkbox",
+								default_value = true,
+							},
+							{
+								setting_id = "show_in_havoc_missions",
+								type = "checkbox",
+								default_value = true,
+							},
+							{
+								setting_id = "show_in_expeditions",
+								type = "checkbox",
+								default_value = true,
+								sub_widgets = {
+									{
+										setting_id = "show_in_expedition_safe_zone",
+										type = "checkbox",
+										default_value = false,
+									},
+								},
+							},
+							{
+								setting_id = "show_in_mortis_trials",
+								type = "checkbox",
+								default_value = true,
+							},
+							{
+								setting_id = "show_in_psykhanium",
+								type = "checkbox",
+								default_value = false,
+							},
+						},
+					},
 				},
 			},
 			{
