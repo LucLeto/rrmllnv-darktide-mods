@@ -41,6 +41,13 @@ return {
 		fr = "\238\128\161 OBJETS D'EXPÉDITION",
 		["zh-cn"] = "\238\128\161 远征物品",
 	},
+	events_group = {
+		en = "\238\128\161 EVENTS",
+		ru = "\238\128\161 СОБЫТИЯ",
+		de = "\238\128\161 EVENTS",
+		fr = "\238\128\161 EVENEMENTS",
+		["zh-cn"] = "\238\128\161 活动",
+	},
 	enable_mod = {
 		en = "Enable mod",
 		ru = "Включить мод",
@@ -201,5 +208,12 @@ return {
 		de = "Leuchten auf explosiven Fässern",
 		fr = "Lueur sur les barils explosifs transportables",
 		["zh-cn"] = "可搬运爆炸桶发光",
+	},
+	enable_event_skulls = {
+		en = "Glow on skulls",
+		ru = "Свечение на черепах",
+		de = "Leuchten auf Schadeln",
+		fr = "Lueur sur les cranes",
+		["zh-cn"] = "颅骨发光",
 	},
 }

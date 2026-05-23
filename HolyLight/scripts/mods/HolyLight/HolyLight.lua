@@ -99,6 +99,10 @@ local EXPEDITION_LUGGABLE_PICKUP_TYPES = {
 	expedition_explosive_luggable_01 = true,
 }
 
+local EVENT_SKULL_PICKUP_TYPES = {
+	skulls_01_pickup = true,
+}
+
 local EXPEDITION_GAME_MODE_NAME = "expedition"
 local MORTIS_GAME_MODE_NAME = "survival"
 local MISSION_SERVER_HOST_TYPE = "mission_server"
@@ -330,6 +334,10 @@ local function pickup_type_enabled(pickup_type)
 
 	if SCRIPTURE_PICKUP_TYPES[pickup_type] then
 		return mod:get("enable_scriptures") ~= false
+	end
+
+	if EVENT_SKULL_PICKUP_TYPES[pickup_type] then
+		return mod:get("enable_event_skulls") ~= false
 	end
 
 	return false

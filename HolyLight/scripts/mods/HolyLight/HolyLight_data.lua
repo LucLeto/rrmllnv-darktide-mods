@@ -154,6 +154,18 @@ return {
 					},
 				},
 			},
+			{
+				setting_id = "events_group",
+				type = "group",
+				text = mod:localize("events_group"),
+				sub_widgets = {
+					{
+						setting_id = "enable_event_skulls",
+						type = "checkbox",
+						default_value = true,
+					},
+				},
+			},
 		},
 	},
 }
