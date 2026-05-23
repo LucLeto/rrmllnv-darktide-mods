@@ -1,13 +1,13 @@
 [b][size=4]What it is and why use it[/size][/b]
 
-Holy Light adds a glow effect above pickups and crates in missions and expeditions. It makes loot easier to spot, especially when items are partially hidden by level geometry, clutter, or lighting.
+Holy Light adds a glow effect above pickups and crates in missions, expeditions, and live events. It makes loot easier to spot, especially when items are partially hidden by level geometry, clutter, or lighting.
 
 [b][size=3]How to use[/size][/b]
 [list=1]
 [*]Install the mod (Darktide Mod Framework / your mod manager, following the game's usual mod setup).[/*]
 [*]Enable the mod and open its options in the mod menu.[/*]
-[*]Adjust the glow height in the Display group.[/*]
-[*]Enable/disable glow per item category in Item categories and Expedition items groups (useful for expedition pickups and pocketables).[/*]
+[*]Adjust the glow height and per-zone visibility in the Display group (Modes subgroup).[/*]
+[*]Enable/disable glow per item category in Item categories, Expedition items, and Events groups.[/*]
 [/list]
 
 [b][size=4]Settings by group[/size][/b]
@@ -16,6 +16,16 @@ Holy Light adds a glow effect above pickups and crates in missions and expeditio
 [list]
 [*]Enable mod - on/off. Default on.[/*]
 [*]Height offset - numeric. Default 0.10. Range 0.10 to 2.00. Step 0.05. Controls how high above the item the glow effect is spawned.[/*]
+[*]Modes
+[list=1]
+[*]Show in missions - on/off. Default on. Glow in standard mission server runs (non-Havoc).[/*]
+[*]Show in Havoc missions - on/off. Default on. Glow in Havoc mission server runs.[/*]
+[*]Show in Expeditions - on/off. Default on. Glow during expedition runs.[/*]
+[*]In safe zone - on/off. Default off. Nested under Show in Expeditions. Glow in the expedition safe zone only when Show in Expeditions is enabled.[/*]
+[*]Show in Mortis Trials - on/off. Default on. Glow in Mortis Trials (survival game mode).[/*]
+[*]Show in Psykhanium - on/off. Default off. Glow in the training shooting range (shooting_range / tg_shooting_range).[/*]
+[/list]
+[/*]
 [/list]
 
 [b][size=3]Item categories[/size][/b]
@@ -39,6 +49,11 @@ Holy Light adds a glow effect above pickups and crates in missions and expeditio
 [*]Glow on strike grenades - on/off. Default on.[/*]
 [*]Glow on servo-triggered mines - on/off. Default on.[/*]
 [*]Glow on explosive luggables - on/off. Default on.[/*]
+[/list]
+
+[b][size=3]Events[/size][/b]
+[list]
+[*]Glow on skulls - on/off. Default on. Glow on tainted skull pickups (skulls_01_pickup) from the Skulls live event.[/*]
 [/list]
 
 [url=https://www.nexusmods.com/profile/RRMLLNV/mods?gameId=4943][img]https://raw.githubusercontent.com/rrmllnv/darktide-mods/master/_images/all-mods.png[/img][/url]
