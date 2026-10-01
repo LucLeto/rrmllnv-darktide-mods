@@ -357,6 +357,9 @@ function mod.on_setting_changed(setting_id)
 	end
 	
 	-- Preset/reset handlers write settings via mod:set(), which does not re-trigger on_setting_changed
+	if mod.refresh_teammate_ability_settings then
+		mod.refresh_teammate_ability_settings()
+	end
 	if mod.refresh_teammate_weapon_settings then
 		mod.refresh_teammate_weapon_settings()
 	end
