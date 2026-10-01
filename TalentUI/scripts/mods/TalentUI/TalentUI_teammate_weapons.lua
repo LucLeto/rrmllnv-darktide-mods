@@ -11,6 +11,23 @@ local player_previous_human_state_weapons = {}
 
 local WEAPON_SLOTS = mod.WEAPON_SLOTS
 
+-- Vanilla bot weapon items have no usable hud_icon; resolve icons through the equivalent player item.
+local BOT_WEAPON_ICON_ITEMS = {
+	["content/items/weapons/player/melee/bot_combatsword_linesman_p1"] = "content/items/weapons/player/melee/combatsword_p1_m1",
+	["content/items/weapons/player/melee/bot_combatsword_linesman_p2"] = "content/items/weapons/player/melee/combatsword_p2_m1",
+	["content/items/weapons/player/melee/bot_combataxe_linesman"] = "content/items/weapons/player/melee/combataxe_p1_m1",
+	["content/items/weapons/player/ranged/bot_lasgun_killshot"] = "content/items/weapons/player/ranged/lasgun_p1_m1",
+	["content/items/weapons/player/ranged/high_bot_lasgun_killshot"] = "content/items/weapons/player/ranged/lasgun_p1_m1",
+	["content/items/weapons/player/ranged/bot_autogun_killshot"] = "content/items/weapons/player/ranged/autogun_p3_m1",
+	["content/items/weapons/player/ranged/high_bot_autogun_killshot"] = "content/items/weapons/player/ranged/autogun_p3_m1",
+	["content/items/weapons/player/ranged/bot_laspistol_killshot"] = "content/items/weapons/player/ranged/laspistol_p1_m1",
+	["content/items/weapons/player/ranged/bot_zola_laspistol"] = "content/items/weapons/player/ranged/laspistol_p1_m1",
+}
+
+local function valid_icon(icon)
+	return type(icon) == "string" and icon ~= ""
+end
+
 local function get_player_weapon_by_slot(player, extensions, slot_name)
 	if not extensions or not extensions.visual_loadout or not extensions.unit_data then
 		return nil
@@ -41,13 +58,23 @@ local function get_player_weapon_by_slot(player, extensions, slot_name)
 	local icon = nil
 	
 	if item and item.name then
-		local master_item = MasterItems.get_item(item.name)
-		if master_item and master_item.hud_icon then
-			icon = master_item.hud_icon
+		local icon_item_name = BOT_WEAPON_ICON_ITEMS[item.name]
+		if icon_item_name then
+			local icon_item = MasterItems.get_item(icon_item_name)
+			if icon_item and valid_icon(icon_item.hud_icon) then
+				icon = icon_item.hud_icon
+			end
+		end
+		
+		if not icon then
+			local master_item = MasterItems.get_item(item.name)
+			if master_item and valid_icon(master_item.hud_icon) then
+				icon = master_item.hud_icon
+			end
 		end
 	end
 	
-	if not icon and item and item.hud_icon then
+	if not icon and item and valid_icon(item.hud_icon) then
 		icon = item.hud_icon
 	end
 	
@@ -57,7 +84,11 @@ local function get_player_weapon_by_slot(player, extensions, slot_name)
 		end)
 		
 		if success_template and weapon_template then
-			icon = weapon_template.hud_icon or weapon_template.hud_icon_small
+			if valid_icon(weapon_template.hud_icon) then
+				icon = weapon_template.hud_icon
+			elseif valid_icon(weapon_template.hud_icon_small) then
+				icon = weapon_template.hud_icon_small
+			end
 		end
 	end
 	
