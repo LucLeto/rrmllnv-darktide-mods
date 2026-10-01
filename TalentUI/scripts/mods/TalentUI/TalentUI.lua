@@ -355,6 +355,11 @@ function mod.on_setting_changed(setting_id)
 			end
 		end
 	end
+	
+	-- Preset/reset handlers write settings via mod:set(), which does not re-trigger on_setting_changed
+	if mod.refresh_teammate_weapon_settings then
+		mod.refresh_teammate_weapon_settings()
+	end
 end
 
 local function update_player_features_hook(func, self, dt, t, player, ui_renderer)
