@@ -23,12 +23,22 @@ mod.teammate_abilities_data = teammate_abilities_data
 
 local player_previous_human_state = {}
 
+-- Resolved CharacterSheet loadout per player name; rebuilt only when the profile or talents table changes
+local teammate_talent_loadouts = {}
 
-local function get_talent_from_character_sheet(player, ability_key)
+
+local function get_cached_talent_loadout(player, player_name)
 	local profile = player and player:profile()
 
 	if not profile then
 		return nil
+	end
+
+	local talents = profile.talents
+	local cached_loadout = teammate_talent_loadouts[player_name]
+
+	if cached_loadout and cached_loadout.profile == profile and cached_loadout.talents == talents then
+		return cached_loadout.loadout_data
 	end
 
 	local loadout_data = {
@@ -37,26 +47,33 @@ local function get_talent_from_character_sheet(player, ability_key)
 		aura = {},
 	}
 
-	local success, entry = pcall(function()
-		CharacterSheet.class_loadout(profile, loadout_data, false, profile.talents or {})
+	-- mute_log = true suppresses the vanilla "[CharacterSheet] Selecting talent ..." info output
+	local success = pcall(CharacterSheet.class_loadout, profile, loadout_data, false, talents or {}, true)
 
-		local entry = loadout_data[ability_key]
-
-		return entry
-	end)
-
-	if success then
-		return entry
+	if not success then
+		loadout_data = nil
 	end
 
-	return nil
+	teammate_talent_loadouts[player_name] = {
+		profile = profile,
+		talents = talents,
+		loadout_data = loadout_data,
+	}
+
+	return loadout_data
+end
+
+local function get_talent_from_character_sheet(player, player_name, ability_key)
+	local loadout_data = get_cached_talent_loadout(player, player_name)
+
+	return loadout_data and loadout_data[ability_key]
 end
 
 local TALENT_ABILITY_METADATA = mod.TALENT_ABILITY_METADATA
 
-local function get_player_ability_by_type(player, extensions, slot_type)
+local function get_player_ability_by_type(player, extensions, slot_type, player_name)
 	if slot_type == "slot_coherency_ability" then
-		local aura_entry = get_talent_from_character_sheet(player, "aura")
+		local aura_entry = get_talent_from_character_sheet(player, player_name, "aura")
 
 		if aura_entry and aura_entry.icon then
 			return {
@@ -103,7 +120,7 @@ local function get_player_ability_by_type(player, extensions, slot_type)
 				local icon = nil
 
 				if slot_type == "slot_grenade_ability" then
-					local blitz_entry = get_talent_from_character_sheet(player, "blitz")
+					local blitz_entry = get_talent_from_character_sheet(player, player_name, "blitz")
 					icon = blitz_entry and blitz_entry.icon
 
 					if not icon and extensions.visual_loadout and extensions.unit_data then
@@ -387,7 +404,7 @@ local function update_teammate_all_abilities(self, player, dt)
 		if icon_widget then
 			local data_key = player_name .. "_" .. ability_info.id
 			
-			local ability_data = get_player_ability_by_type(player, extensions, ability_info.slot)
+			local ability_data = get_player_ability_by_type(player, extensions, ability_info.slot, player_name)
 			if ability_data and ability_data.ability_type and ability_data.icon then
 				local cached_data = teammate_abilities_data[data_key]
 				if not cached_data or cached_data.ability_type ~= ability_data.ability_type or cached_data.icon ~= ability_data.icon then
@@ -548,5 +565,6 @@ mod.clear_teammate_all_abilities_data = function(player_name)
 		teammate_abilities_data[key] = nil
 	end
 	
+	teammate_talent_loadouts[player_name] = nil
 	player_previous_human_state[player_name] = nil
 end
