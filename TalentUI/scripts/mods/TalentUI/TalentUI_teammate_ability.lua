@@ -173,20 +173,25 @@ local function get_ability_state(player, extensions, ability_type)
 		return 1, false, nil, false, nil
 	end
 	
-	local remaining_cooldown = ability_extension:remaining_ability_cooldown(ability_type)
-	local max_cooldown = ability_extension:max_ability_cooldown(ability_type)
+	local max_resource = ability_extension:max_ability_resource(ability_type)
+	local is_paused = ability_extension:is_ability_resource_regen_paused(ability_type)
 	local remaining_charges = ability_extension:remaining_ability_charges(ability_type)
 	local max_charges = ability_extension:max_ability_charges(ability_type)
 	
 	local uses_charges = max_charges and max_charges > 1
 	local has_charges_left = remaining_charges and remaining_charges > 0 or false
 	
-	local cooldown_progress = 1
+	local cooldown_progress
 	
-	if max_cooldown and max_cooldown > 0 then
-		cooldown_progress = 1 - math.lerp(0, 1, remaining_cooldown / max_cooldown)
-		if cooldown_progress == 0 then
-			cooldown_progress = 1
+	-- Mirrors the 1.13.0 vanilla HudElementPlayerAbility resource logic (can_use_ability is not available on husks)
+	if is_paused then
+		cooldown_progress = 0
+	elseif max_resource and max_resource > 0 then
+		cooldown_progress = ability_extension:get_ability_resource_regen_progress(ability_type) or 0
+		
+		-- NaN guard, mirrors HudElementPlayerAbility._set_progress
+		if cooldown_progress ~= cooldown_progress then
+			cooldown_progress = 0
 		end
 	else
 		cooldown_progress = uses_charges and 1 or 0
@@ -328,17 +333,21 @@ local function format_cooldown_text(ability_ext, ability_type_name, format_type,
 		charges_text = tostring(remaining_charges)
 	end
 	
-	local remaining_cooldown = ability_ext:remaining_ability_cooldown(ability_type_name)
-	if remaining_cooldown and remaining_cooldown > 0 then
+	-- nil/NaN progress fails the comparison and produces no cooldown text
+	local regen_progress = ability_ext:get_ability_resource_regen_progress(ability_type_name)
+	if regen_progress and regen_progress < 1 then
 		if format_type == "time" then
-			cooldown_text = string.format("%d", math.ceil(remaining_cooldown))
-		elseif format_type == "percent" then
-			local max_cooldown = ability_ext:max_ability_cooldown(ability_type_name)
-			if max_cooldown and max_cooldown > 0 then
-				local percent = (1 - remaining_cooldown / max_cooldown) * 100
-				if percent < 99 then
-					cooldown_text = string.format("%d%%", math.floor(percent))
+			local max_regen_time = ability_ext:max_regen_time_for_ability_charge(ability_type_name)
+			if max_regen_time and max_regen_time > 0 then
+				local remaining_time = (1 - regen_progress) * max_regen_time
+				if remaining_time > 0 then
+					cooldown_text = string.format("%d", math.ceil(remaining_time))
 				end
+			end
+		elseif format_type == "percent" then
+			local percent = regen_progress * 100
+			if percent < 99 then
+				cooldown_text = string.format("%d%%", math.floor(percent))
 			end
 		end
 	end

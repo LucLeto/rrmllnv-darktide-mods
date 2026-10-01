@@ -6,7 +6,6 @@ local UIWidget = require("scripts/managers/ui/ui_widget")
 local UIFontSettings = require("scripts/managers/ui/ui_font_settings")
 local UIHudSettings = require("scripts/settings/ui/ui_hud_settings")
 local HudElementPlayerAbilitySettings = require("scripts/ui/hud/elements/player_ability/hud_element_player_ability_settings")
-local FixedFrame = require("scripts/utilities/fixed_frame")
 
 local TalentUISettings = mod:io_dofile("TalentUI/scripts/mods/TalentUI/TalentUI_settings")
 
@@ -86,6 +85,65 @@ local function get_buff_remaining_time(buff_extension, buff_template_name)
 	return timer
 end
 
+-- Stat buff keys per ability type, built once to avoid string concatenation every frame
+local regen_flat_stat_keys = {}
+local regen_modifier_stat_keys = {}
+
+-- Exact seconds until the current charge is regenerated, mirroring PlayerUnitAbilityExtension._update_ability_resources (1.13.0).
+-- Returns nil when it cannot be computed (e.g. regen paused); the caller then falls back to the base-rate estimate.
+local function get_exact_regen_time_remaining(ability_extension, buff_extension, ability_type)
+	if not ability_extension or not buff_extension then
+		return nil
+	end
+
+	local ability = ability_extension:ability_is_equipped(ability_type)
+
+	if not ability or ability.only_uses_charges or ability.resource_pool_override then
+		return nil
+	end
+
+	local stat_buffs = buff_extension:stat_buffs()
+
+	if not stat_buffs then
+		return nil
+	end
+
+	local flat_stat_key = regen_flat_stat_keys[ability_type]
+
+	if not flat_stat_key then
+		flat_stat_key = ability_type .. "_resource_flat_regen"
+		regen_flat_stat_keys[ability_type] = flat_stat_key
+		regen_modifier_stat_keys[ability_type] = ability_type .. "_resource_regen_modifier"
+	end
+
+	local base_regen_per_second = 0
+
+	if not ability_extension:is_ability_resource_regen_paused(ability_type) then
+		base_regen_per_second = ability.resource_regen_per_second or 0
+
+		local regen_percent_per_second = ability.resource_regen_percent_per_second
+
+		if regen_percent_per_second then
+			base_regen_per_second = base_regen_per_second + ability_extension:max_ability_resource(ability_type) * regen_percent_per_second
+		end
+	end
+
+	local regen_per_second = (base_regen_per_second + (stat_buffs[flat_stat_key] or 0)) * (stat_buffs[regen_modifier_stat_keys[ability_type]] or 1)
+	local net_regen_per_second = regen_per_second - ability_extension:get_ability_resource_cost_per_second(ability_type)
+
+	if net_regen_per_second <= 0 then
+		return nil
+	end
+
+	local missing_resource = ability_extension:missing_ability_resource_until_next_charge(ability_type)
+
+	if not missing_resource then
+		return nil
+	end
+
+	return math.max(missing_resource, 0) / net_regen_per_second
+end
+
 mod:hook_safe("HudElementPlayerAbility", "update", function(self)
 	if not mod:get("show_local_ability_cooldown") then
 		return
@@ -101,7 +159,8 @@ mod:hook_safe("HudElementPlayerAbility", "update", function(self)
 	local player = self._data.player
 	local player_unit = player.player_unit
 	local parent = self._parent
-	local ability_id = self._ability_id
+	-- 1.13.0 renamed HudElementPlayerAbility._ability_id to _ability_type
+	local ability_type = self._ability_type or self._ability_id
 	
 	if not rawget(_G, "ALIVE") or not ALIVE[player_unit] then
 		text_widget.content.text = ""
@@ -123,15 +182,16 @@ mod:hook_safe("HudElementPlayerAbility", "update", function(self)
 	local display_text = ""
 	local display_color = COOLDOWN_COLOR
 	local is_active = false
+	local has_active_buff = false
 	
-	if ability_extension and ability_extension:ability_is_equipped(ability_id) then
-		local pause_cooldown_settings = ability_extension:ability_pause_cooldown_settings(ability_id)
+	if ability_extension and ability_extension:ability_is_equipped(ability_type) then
+		local pause_cooldown_settings = ability_extension:ability_pause_cooldown_settings(ability_type)
 		
 		if pause_cooldown_settings and buff_extension then
 			local duration_tracking_buff = pause_cooldown_settings.duration_tracking_buff
 			
 			if duration_tracking_buff then
-				local has_active_buff = buff_extension:current_stacks(duration_tracking_buff) > 0
+				has_active_buff = buff_extension:current_stacks(duration_tracking_buff) > 0
 				
 				if has_active_buff and show_active then
 					is_active = true
@@ -159,6 +219,12 @@ mod:hook_safe("HudElementPlayerAbility", "update", function(self)
 		end
 	end
 	
+	-- 1.13.0 vanilla _on_cooldown is false while any charge is usable; keep treating a recharging extra charge as cooldown (pre-1.13 behavior)
+	if not on_cooldown and progress and progress ~= 1 then
+		local in_process_of_going_on_cooldown = has_active_buff and progress > 0
+		on_cooldown = not in_process_of_going_on_cooldown
+	end
+	
 	if not is_active then
 		if not on_cooldown or progress >= 1 then
 			display_text = ""
@@ -166,28 +232,19 @@ mod:hook_safe("HudElementPlayerAbility", "update", function(self)
 			display_color = COOLDOWN_COLOR
 			
 			if format_type == "time" then
-				if rawget(_G, "ScriptUnit") then
-					local unit_data_extension = ScriptUnit.extension(player_unit, "unit_data_system")
-					if unit_data_extension then
-						local ability_component = unit_data_extension:read_component("combat_ability")
-						if ability_component and ability_component.cooldown then
-							local fixed_frame_t = FixedFrame.get_latest_fixed_time()
-							local time_remaining = math.max(ability_component.cooldown - fixed_frame_t, 0)
-							
-							if time_remaining > 0 then
-								if show_decimals then
-									display_text = string.format("%.1f", time_remaining)
-								else
-									display_text = string.format("%.0f", math.ceil(time_remaining))
-								end
-							else
-								display_text = ""
-							end
-						else
-							display_text = ""
-						end
+				local time_remaining = get_exact_regen_time_remaining(ability_extension, buff_extension, ability_type)
+
+				if not time_remaining then
+					-- Base-rate estimate; progress is the resource regen progress of the current charge here (on cooldown and < 1)
+					local max_regen_time = ability_extension and ability_extension:max_regen_time_for_ability_charge(ability_type)
+					time_remaining = max_regen_time and max_regen_time > 0 and (1 - progress) * max_regen_time or 0
+				end
+
+				if time_remaining > 0 then
+					if show_decimals then
+						display_text = string.format("%.1f", time_remaining)
 					else
-						display_text = ""
+						display_text = string.format("%.0f", math.ceil(time_remaining))
 					end
 				else
 					display_text = ""
