@@ -1,7 +1,7 @@
 local mod = get_mod("TalentUI")
 
 local pcall, tostring = pcall, tostring
-local math_ceil, math_floor = math.ceil, math.floor
+local math_ceil, math_floor, math_clamp = math.ceil, math.floor, math.clamp
 local string_format = string.format
 
 local CharacterSheet
@@ -164,7 +164,38 @@ local function get_player_ability_by_type(player, extensions, ability_info, play
 	return ability_type, ability_type, icon
 end
 
--- regen_progress is the raw get_ability_resource_regen_progress value, read once per frame by the caller
+-- The teammate copy's get_ability_resource_regen_progress divides by the template cost, which ignores cost
+-- modifiers. max_ability_resource, the resource and the charge count are synced with them, so the cost per
+-- charge is taken from those.
+local function get_regen_progress(ability_extension, ability_type)
+	local ability = ability_extension:ability_is_equipped(ability_type)
+
+	-- charges-only blitzes (grenades) and abilities without their own charge-based pool keep the vanilla value
+	if not ability or ability.only_uses_charges or ability.resource_pool_override or (ability.usage_cost_type or "charges") ~= "charges" then
+		return ability_extension:get_ability_resource_regen_progress(ability_type)
+	end
+
+	local max_charges = ability_extension:max_ability_charges(ability_type)
+	local max_resource = ability_extension:max_ability_resource(ability_type)
+
+	-- values that aren't synced yet keep the vanilla value
+	if max_charges <= 0 or max_resource <= 0 then
+		return ability_extension:get_ability_resource_regen_progress(ability_type)
+	end
+
+	local remaining_charges = ability_extension:remaining_ability_charges(ability_type)
+
+	if remaining_charges >= max_charges then
+		return 1
+	end
+
+	local cost_per_charge = max_resource / max_charges
+	local charge_resource = ability_extension:remaining_ability_resource(ability_type) - remaining_charges * cost_per_charge
+
+	return math_clamp(charge_resource / cost_per_charge, 0, 1)
+end
+
+-- regen_progress is the raw get_regen_progress value, read once per frame by the caller
 local function get_ability_state(player, extensions, ability_type, regen_progress)
 	if ability_type == "coherency_ability" then
 		return 1, false, nil, false, nil
@@ -345,7 +376,7 @@ local function hide_all_ability_widgets(self)
 end
 
 -- Returns the cooldown text, cached on ability_data; the string is only formatted again when the displayed numbers or format change.
--- regen_progress must be the raw get_ability_resource_regen_progress value, not get_ability_state's guarded cooldown_progress
+-- regen_progress must be the raw get_regen_progress value, not get_ability_state's guarded cooldown_progress
 local function format_cooldown_text(ability_data, ability_ext, ability_type_name, format_type, uses_charges, remaining_charges, regen_progress)
 	local charges = nil
 	local cooldown = nil
@@ -522,7 +553,7 @@ local function update_teammate_all_abilities(self, player, dt)
 				-- Read once per frame; get_ability_state and format_cooldown_text both use this raw value
 				local regen_progress = nil
 				if ability_extension and ability_type ~= "coherency_ability" then
-					regen_progress = ability_extension:get_ability_resource_regen_progress(ability_type)
+					regen_progress = get_regen_progress(ability_extension, ability_type)
 				end
 				
 				local cooldown_progress, on_cooldown, remaining_charges, has_charges_left, max_charges = get_ability_state(player, extensions, ability_type, regen_progress)
