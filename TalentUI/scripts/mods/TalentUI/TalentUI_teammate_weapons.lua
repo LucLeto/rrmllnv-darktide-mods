@@ -8,10 +8,11 @@ local Ammo = require("scripts/utilities/ammo")
 
 local TalentUISettings = mod:io_dofile("TalentUI/scripts/mods/TalentUI/TalentUI_settings")
 
+local AMMO_UPDATE_INTERVAL = 0.1
 local WEAPON_ICON_PACKAGE_REFERENCE = "TalentUI_team_weapon_icon"
 local DEFAULT_WEAPON_ICON = "content/ui/materials/icons/weapons/hud/combat_blade_01"
 
--- Per player, per slot: { item_name, icon, icon_held, ammo_current, ammo_max, ammo_text }; icon is re-resolved only when the equipped item changes
+-- Per player, per slot: { item_name, icon, icon_held, ammo_current, ammo_max, ammo_text, ammo_visible }; icon is re-resolved only when the equipped item changes
 local teammate_weapons_data = {}
 
 -- Package references on the item icons the team panels show, per HUD: hud -> icon -> load id. An item's hud_icon is
@@ -188,6 +189,9 @@ end
 local function hide_all_weapon_widgets(self)
 	local widgets_by_name = self._widgets_by_name
 
+	-- the ammo text refreshes on the frame the widgets come back instead of up to an interval later
+	self._talentui_ammo_t = nil
+
 	for i = 1, NUM_WEAPON_SLOTS do
 		local icon_widget = widgets_by_name[WEAPON_ICON_WIDGET_NAMES[i]]
 		local text_widget = widgets_by_name[WEAPON_TEXT_WIDGET_NAMES[i]]
@@ -250,7 +254,13 @@ local function update_teammate_weapons(self, player, dt)
 	
 	local weapon_icon_width = TalentUISettings.teammate_weapon_icon_width
 	local weapon_icon_height = TalentUISettings.teammate_weapon_icon_height
-	
+
+	-- ammo is read ten times a second rather than every frame, like NumericUI's team panel
+	local ammo_elapsed = (self._talentui_ammo_t or AMMO_UPDATE_INTERVAL) + dt
+	local refresh_ammo = ammo_elapsed >= AMMO_UPDATE_INTERVAL
+
+	self._talentui_ammo_t = refresh_ammo and 0 or ammo_elapsed
+
 	for i = 1, NUM_WEAPON_SLOTS do
 		-- if self._show_as_dead or self._dead or self._hogtied then
 		-- 	hide_all_weapon_widgets(self)
@@ -338,32 +348,32 @@ local function update_teammate_weapons(self, player, dt)
 					local new_visible = false
 					
 					if teammate_weapon_show_ammo then
-						local slot_component = unit_data_extension and unit_data_extension:has_component(slot_name) and unit_data_extension:read_component(slot_name)
-						
-						if slot_component then
-							local total_max_ammo = (Ammo.max_ammo_in_clips(slot_component) or 0) + (Ammo.max_ammo_in_reserve(slot_component) or 0)
-							local total_current_ammo = (Ammo.current_ammo_in_clips(slot_component) or 0) + (Ammo.current_ammo_in_reserve(slot_component) or 0)
-							
-							if total_max_ammo == 0 then
-								new_text = ""
-								new_visible = false
-							else
-								if weapon_data.ammo_current ~= total_current_ammo or weapon_data.ammo_max ~= total_max_ammo then
-									weapon_data.ammo_current = total_current_ammo
-									weapon_data.ammo_max = total_max_ammo
-									weapon_data.ammo_text = string_format("%d/%d", total_current_ammo, total_max_ammo)
+						if refresh_ammo or weapon_data.ammo_visible == nil then
+							local slot_component = unit_data_extension and unit_data_extension:has_component(slot_name) and unit_data_extension:read_component(slot_name)
+							local ammo_visible = false
+
+							if slot_component then
+								local total_max_ammo = (Ammo.max_ammo_in_clips(slot_component) or 0) + (Ammo.max_ammo_in_reserve(slot_component) or 0)
+								local total_current_ammo = (Ammo.current_ammo_in_clips(slot_component) or 0) + (Ammo.current_ammo_in_reserve(slot_component) or 0)
+
+								if total_max_ammo ~= 0 then
+									ammo_visible = true
+
+									if weapon_data.ammo_current ~= total_current_ammo or weapon_data.ammo_max ~= total_max_ammo then
+										weapon_data.ammo_current = total_current_ammo
+										weapon_data.ammo_max = total_max_ammo
+										weapon_data.ammo_text = string_format("%d/%d", total_current_ammo, total_max_ammo)
+									end
 								end
-								
-								new_text = weapon_data.ammo_text
-								new_visible = true
 							end
-						else
-							new_text = ""
-							new_visible = false
+
+							weapon_data.ammo_visible = ammo_visible
 						end
-					else
-						new_text = ""
-						new_visible = false
+
+						if weapon_data.ammo_visible then
+							new_text = weapon_data.ammo_text
+							new_visible = true
+						end
 					end
 					
 					local text_content = text_widget.content
