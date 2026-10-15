@@ -6,6 +6,10 @@ local UIWidget = require("scripts/managers/ui/ui_widget")
 local UIFontSettings = require("scripts/managers/ui/ui_font_settings")
 local UIHudSettings = require("scripts/settings/ui/ui_hud_settings")
 local HudElementPlayerAbilitySettings = require("scripts/ui/hud/elements/player_ability/hud_element_player_ability_settings")
+local FixedFrame = require("scripts/utilities/fixed_frame")
+local ProjectileTemplates = require("scripts/settings/projectile/projectile_templates")
+local StimmFieldCrateUnitTemplate = require("scripts/extension_systems/unit_templates/broker_stimm_field_crate_deployable_unit_template")
+local TalentSettings = require("scripts/settings/talent/talent_settings")
 
 local TalentUISettings = mod:io_dofile("TalentUI/scripts/mods/TalentUI/TalentUI_settings")
 
@@ -62,27 +66,352 @@ mod:hook(_G, "dofile", function(func, path)
 	return instance
 end)
 
-local function get_buff_remaining_time(buff_extension, buff_template_name)
-	if not buff_extension then
-		return 0
+local ACTIVE_BUFF_SCAN_INTERVAL = 0.1
+local CHORUS_ACTION_NAME = "action_zealot_channel"
+
+-- The active timer below mirrors NumericUI's (PlayerAbility.lua), with each time function also returning the effect's
+-- full duration for the percent format.
+
+-- Combat abilities whose action code adds their timed buff, so the ability settings don't name it. Only the buff
+-- names live here; the remaining time is always read from the live buff. The Skitarius' Chordclaw is left out on
+-- purpose: its 10 s buff only caps how long the claw can stay out, it is no lingering effect.
+local ACTIVE_BUFFS_BY_ABILITY = {
+	veteran_combat_ability_stance = {
+		"veteran_combat_ability_stance_master",
+		"veteran_combat_ability_stance_master_increased_duration",
+	},
+	veteran_combat_ability_stance_improved = {
+		"veteran_combat_ability_stance_master",
+		"veteran_combat_ability_stance_master_increased_duration",
+	},
+	veteran_combat_ability_stealth = { "veteran_invisibility" },
+}
+
+local function get_player_extension(self, system_name)
+	return self._parent:get_player_extension(self._data.player, system_name)
+end
+
+-- Vanilla's own ability HUD keeps the ability from reading as on cooldown while this buff runs (Hive Scum stances)
+local function has_duration_tracking_buff(buff_extension, pause_cooldown_settings)
+	local duration_tracking_buff = pause_cooldown_settings and pause_cooldown_settings.duration_tracking_buff
+
+	if not duration_tracking_buff or not buff_extension then
+		return false
 	end
 
-	local buffs_by_index = buff_extension._buffs_by_index
-	if not buffs_by_index then
-		return 0
+	if type(duration_tracking_buff) == "table" then
+		for i = 1, #duration_tracking_buff do
+			if buff_extension:current_stacks(duration_tracking_buff[i]) > 0 then
+				return true
+			end
+		end
+
+		return false
 	end
 
-	local timer = 0
-	for _, buff in pairs(buffs_by_index) do
-		local template = buff:template()
-		if template and template.name == buff_template_name then
-			local remaining = buff:duration_progress() or 1
-			local duration = buff:duration() or 15
-			timer = math.max(timer, duration * remaining)
+	return buff_extension:current_stacks(duration_tracking_buff) > 0
+end
+
+-- per ability name: the set of buff template names that carry its active effect, or false when it has none
+local active_buff_names_by_ability = {}
+
+local function get_active_buff_names(ability)
+	local ability_name = ability.name
+	local buff_names = active_buff_names_by_ability[ability_name]
+
+	if buff_names ~= nil then
+		return buff_names
+	end
+
+	buff_names = {}
+
+	-- the buff a stance-like ability applies, and the buff whose duration vanilla's own ability HUD tracks
+	local tweak_data = ability.ability_template_tweak_data
+	local buff_to_add = tweak_data and tweak_data.buff_to_add
+
+	if buff_to_add then
+		buff_names[buff_to_add] = true
+	end
+
+	local pause_cooldown_settings = ability.pause_cooldown_settings
+	local duration_tracking_buff = pause_cooldown_settings and pause_cooldown_settings.duration_tracking_buff
+
+	if type(duration_tracking_buff) == "table" then
+		for i = 1, #duration_tracking_buff do
+			buff_names[duration_tracking_buff[i]] = true
+		end
+	elseif duration_tracking_buff then
+		buff_names[duration_tracking_buff] = true
+	end
+
+	local extra_buff_names = ACTIVE_BUFFS_BY_ABILITY[ability_name]
+
+	if extra_buff_names then
+		for i = 1, #extra_buff_names do
+			buff_names[extra_buff_names[i]] = true
 		end
 	end
 
-	return timer
+	if next(buff_names) == nil then
+		buff_names = false
+	end
+
+	active_buff_names_by_ability[ability_name] = buff_names
+
+	return buff_names
+end
+
+local function find_active_buff(self)
+	local buff_extension = get_player_extension(self, "buff_system")
+
+	if not buff_extension then
+		return nil
+	end
+
+	local buff_names = self._talentui_active_buff_names
+	local buffs = buff_extension:buffs()
+
+	for i = 1, #buffs do
+		local buff = buffs[i]
+
+		if buff_names[buff:template_name()] then
+			return buff
+		end
+	end
+
+	return nil
+end
+
+-- Read from the ability's live buff, so duration talents, extensions and early ends count exactly as the game counts
+-- them. The buff is cached on the element and looked for again at most every ACTIVE_BUFF_SCAN_INTERVAL
+local function get_buff_time_remaining(self, t)
+	local buff = self._talentui_active_buff
+
+	-- a deleted buff ended early or was replaced by a recast, so look for its successor straight away
+	if buff and rawget(buff, "__deleted") then
+		buff = nil
+		self._talentui_active_buff = nil
+		self._talentui_active_buff_scan_t = nil
+	end
+
+	if not buff then
+		local scan_t = self._talentui_active_buff_scan_t
+
+		if scan_t and t < scan_t then
+			return nil
+		end
+
+		buff = find_active_buff(self)
+		self._talentui_active_buff = buff
+		self._talentui_active_buff_scan_t = t + ACTIVE_BUFF_SCAN_INTERVAL
+
+		if not buff then
+			return nil
+		end
+	end
+
+	-- Scrier's Gaze and Precision Stance have no duration; they end on peril or when their resource runs out
+	local duration = buff:duration()
+
+	if duration then
+		return buff:start_time() + duration - t, duration
+	end
+
+	return nil
+end
+
+-- Chorus is a channel action, whose end time already includes any action speed change. Cancelling it ends it.
+local function get_chorus_time_remaining(self, t)
+	local unit_data_extension = get_player_extension(self, "unit_data_system")
+	local weapon_action_component = unit_data_extension and unit_data_extension:read_component("weapon_action")
+
+	if weapon_action_component and weapon_action_component.current_action_name == CHORUS_ACTION_NAME then
+		local end_t = weapon_action_component.end_t
+
+		return end_t - t, end_t - weapon_action_component.start_t
+	end
+
+	return nil
+end
+
+-- Every Telekine Shield keeps its remaining duration on its own extension, synced to clients by the server. With
+-- two up, the one deployed first runs out first.
+local function get_telekine_shield_time_remaining(self)
+	local extension_manager = Managers.state.extension
+	local force_field_system = extension_manager and extension_manager:system("force_field_system")
+	local player_unit = self._data.player.player_unit
+
+	if not force_field_system or not player_unit then
+		return nil
+	end
+
+	local remaining, total
+
+	for _, extension in pairs(force_field_system:unit_to_extension_map()) do
+		if extension.owner_unit == player_unit then
+			local shield_remaining = extension:remaining_duration()
+
+			if shield_remaining and shield_remaining > 0 and (not remaining or shield_remaining < remaining) then
+				remaining = shield_remaining
+				total = extension._max_duration
+			end
+		end
+	end
+
+	return remaining, total
+end
+
+-- The local player's Nuncio-Aquila drones and Stimm Field crates by unit, with the fixed time each one's lifetime
+-- ends and its full lifetime. Both lifetimes run on the server only, so the clock is started where the server starts
+-- it: when the drone deploys and when the crate spawns. A client sees both slightly later than the server, so its
+-- timer is an estimate.
+local drone_lifetimes = {}
+local stimm_field_lifetimes = {}
+
+local function get_local_player_owner_unit(unit)
+	local owner = Managers.state.player_unit_spawn:owner(unit)
+
+	if owner and owner == Managers.player:local_player(1) then
+		return owner.player_unit
+	end
+
+	return nil
+end
+
+-- Seconds until the first of the tracked units runs out. A unit stays tracked while the local player owns it: the
+-- game releases the ownership when the unit is destroyed, and every mission starts with a new spawn manager, so an
+-- end time left over from an earlier mission's clock is dropped as well.
+local function get_tracked_time_remaining(lifetimes, t)
+	local player_unit_spawn_manager = Managers.state.player_unit_spawn
+	local local_player = Managers.player:local_player(1)
+	local remaining, total
+
+	for unit, lifetime in pairs(lifetimes) do
+		local unit_remaining = lifetime.end_t - t
+
+		if unit_remaining <= 0 or not player_unit_spawn_manager or player_unit_spawn_manager:owner(unit) ~= local_player then
+			lifetimes[unit] = nil
+		elseif not remaining or unit_remaining < remaining then
+			remaining = unit_remaining
+			total = lifetime.duration
+		end
+	end
+
+	return remaining, total
+end
+
+local function get_drone_time_remaining(_self, t)
+	return get_tracked_time_remaining(drone_lifetimes, t)
+end
+
+local function get_stimm_field_time_remaining(_self, t)
+	return get_tracked_time_remaining(stimm_field_lifetimes, t)
+end
+
+local function is_active_timer_enabled()
+	return mod:get("show_local_ability_cooldown") and mod:get("show_local_ability_active") ~= false
+end
+
+local area_buff_drone = ProjectileTemplates.area_buff_drone
+local area_buff_drone_deployable = area_buff_drone and area_buff_drone.deployable
+
+if area_buff_drone_deployable and area_buff_drone_deployable.deploy_func then
+	-- the server registers the drone's lifetime job here, and clients run the same function when they see it deploy
+	mod:hook_safe(area_buff_drone_deployable, "deploy_func", function(_world, _physics_world, unit)
+		if is_active_timer_enabled() and get_local_player_owner_unit(unit) then
+			local duration = TalentSettings.adamant.blitz_ability.drone.duration
+
+			drone_lifetimes[unit] = {
+				end_t = FixedFrame.get_latest_fixed_time() + duration,
+				duration = duration,
+			}
+		end
+	end)
+end
+
+local function track_stimm_field(unit)
+	if not is_active_timer_enabled() then
+		return
+	end
+
+	local owner_unit = get_local_player_owner_unit(unit)
+
+	if not owner_unit then
+		return
+	end
+
+	-- the life time ProximityBrokerStimmField.init picks
+	local settings = TalentSettings.broker.combat_ability.stimm_field
+	local talent_extension = ScriptUnit.has_extension(owner_unit, "talent_system")
+	local life_time = talent_extension and talent_extension:has_special_rule("broker_stimm_field_linger") and settings.sub_1_life_time or settings.life_time
+
+	stimm_field_lifetimes[unit] = {
+		end_t = FixedFrame.get_latest_fixed_time() + life_time,
+		duration = life_time,
+	}
+end
+
+-- As the server, which registers the field's lifetime job when the crate has spawned
+mod:hook_safe(StimmFieldCrateUnitTemplate, "local_unit_spawned", track_stimm_field)
+
+-- As a client
+mod:hook_safe(StimmFieldCrateUnitTemplate, "husk_init", track_stimm_field)
+
+-- Combat abilities whose effect is no buff on the player
+local ACTIVE_TIME_FUNCS = {
+	zealot_relic = get_chorus_time_remaining,
+	psyker_force_field = get_telekine_shield_time_remaining,
+	psyker_force_field_improved = get_telekine_shield_time_remaining,
+	psyker_force_field_dome = get_telekine_shield_time_remaining,
+	adamant_area_buff_drone = get_drone_time_remaining,
+	broker_ability_stimm_field = get_stimm_field_time_remaining,
+}
+
+-- How the equipped ability's active time is read. It is cached on the element, which the ability handler recreates
+-- when the ability changes. Nil until the ability is equipped, false for abilities without a timed effect.
+local function get_active_time_func(self, ability_extension, ability_type)
+	local time_func = self._talentui_active_time_func
+
+	if time_func ~= nil then
+		return time_func
+	end
+
+	local ability = ability_extension and ability_extension:ability_is_equipped(ability_type)
+
+	if not ability then
+		return nil
+	end
+
+	time_func = ACTIVE_TIME_FUNCS[ability.name]
+
+	if not time_func then
+		local buff_names = get_active_buff_names(ability)
+
+		self._talentui_active_buff_names = buff_names
+		time_func = buff_names and get_buff_time_remaining or false
+	end
+
+	self._talentui_active_time_func = time_func
+
+	return time_func
+end
+
+-- Seconds left on the combat ability's active effect and its full duration (nil when unknown), or nil when nothing
+-- is running
+local function get_active_time_remaining(self, ability_extension, ability_type)
+	local time_func = get_active_time_func(self, ability_extension, ability_type)
+
+	if not time_func then
+		return nil
+	end
+
+	local remaining, total = time_func(self, FixedFrame.get_latest_fixed_time())
+
+	if remaining and remaining > 0 then
+		return remaining, total
+	end
+
+	return nil
 end
 
 -- Seconds until the next charge at the ability's base recharge speed, mirroring NumericUI's
@@ -168,35 +497,21 @@ mod:hook_safe("HudElementPlayerAbility", "update", function(self)
 	local has_active_buff = false
 	
 	if ability_extension and ability_extension:ability_is_equipped(ability_type) then
-		local pause_cooldown_settings = ability_extension:ability_pause_cooldown_settings(ability_type)
-		
-		if pause_cooldown_settings and buff_extension then
-			local duration_tracking_buff = pause_cooldown_settings.duration_tracking_buff
-			
-			if duration_tracking_buff then
-				has_active_buff = buff_extension:current_stacks(duration_tracking_buff) > 0
-				
-				if has_active_buff and show_active then
-					is_active = true
-					local remaining_buff_time = get_buff_remaining_time(buff_extension, duration_tracking_buff)
-					
-					if remaining_buff_time and remaining_buff_time >= 0.05 then
-						display_color = ACTIVE_COLOR
-						
-						if format_type == "time" then
-							if show_decimals then
-								display_text = string.format("%.1f", remaining_buff_time)
-							else
-								display_text = string.format("%.0f", math.ceil(remaining_buff_time))
-							end
-						elseif format_type == "percent" then
-							local duration_progress = buff_extension:buff_duration_progress(duration_tracking_buff)
-							local percent = (1 - duration_progress) * 100
-							display_text = string.format("%d%%", math.floor(percent))
-						end
-					else
-						display_text = ""
-					end
+		has_active_buff = has_duration_tracking_buff(buff_extension, ability_extension:ability_pause_cooldown_settings(ability_type))
+
+		if show_active then
+			local active_time_remaining, active_duration = get_active_time_remaining(self, ability_extension, ability_type)
+
+			if active_time_remaining then
+				is_active = true
+				display_color = ACTIVE_COLOR
+
+				if format_type == "percent" and active_duration and active_duration > 0 then
+					display_text = string.format("%d%%", math.floor(active_time_remaining / active_duration * 100))
+				elseif show_decimals then
+					display_text = string.format("%.1f", active_time_remaining)
+				else
+					display_text = string.format("%.0f", math.ceil(active_time_remaining))
 				end
 			end
 		end
@@ -245,7 +560,9 @@ mod:hook_safe("HudElementPlayerAbility", "update", function(self)
 	text_widget.visible = display_text ~= ""
 	text_widget.dirty = true
 	
-	local is_ready = not on_cooldown and progress >= 1 and not is_active
+	-- vanilla's tracked stance rather than the active timer, so an ability that recharges while its effect still runs
+	-- (kills extending Volley Fire) still notifies when it is ready
+	local is_ready = not on_cooldown and progress >= 1 and not has_active_buff
 	
 	if show_ready_notification then
 		if self._ability_ready_prev == nil then
