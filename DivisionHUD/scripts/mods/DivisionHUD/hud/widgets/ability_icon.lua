@@ -164,7 +164,8 @@ function M.init(self, definitions)
 	end
 end
 
-function M.update(self, player_unit, opacity, dt)
+-- cooldown_state and effect_active come from this frame's CombatAbilityBar.update; both are nil when the bar is hidden
+function M.update(self, player_unit, opacity, dt, cooldown_state, effect_active)
 	dt = (type(dt) == "number" and dt == dt and dt > 0) and dt or 0
 
 	local widget = self._widgets_by_name and self._widgets_by_name.ability_icon
@@ -178,7 +179,11 @@ function M.update(self, player_unit, opacity, dt)
 	local is_requested = false
 
 	if feature_enabled and player_unit and ALIVE[player_unit] then
-		is_requested = CombatAbilityBar.is_ability_in_use_or_on_cooldown(player_unit, COMBAT_ABILITY_TYPE) and true or false
+		if cooldown_state then
+			is_requested = CombatAbilityBar.is_state_in_use_or_on_cooldown(cooldown_state, effect_active)
+		else
+			is_requested = CombatAbilityBar.is_ability_in_use_or_on_cooldown(player_unit, COMBAT_ABILITY_TYPE) and true or false
+		end
 	end
 
 	local alpha = self._ability_icon_alpha_mult or 0
@@ -234,7 +239,8 @@ function M.update(self, player_unit, opacity, dt)
 			widget.dirty = true
 		end
 
-		local cooldown_state = CombatAbilityBar.cooldown_state(player_unit, COMBAT_ABILITY_TYPE)
+		cooldown_state = cooldown_state or CombatAbilityBar.cooldown_state(player_unit, COMBAT_ABILITY_TYPE)
+
 		local progress = cooldown_state.cooldown_progress
 
 		if widget.content.duration_progress ~= progress then

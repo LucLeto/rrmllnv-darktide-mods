@@ -247,6 +247,10 @@ local function best_buff_overlay_progress(buff_extension, candidate_list)
 	return best_progress
 end
 
+-- Overlay entry keys per buff instance and force field extension, so they aren't formatted every frame
+local buff_entry_keys = setmetatable({}, { __mode = "k" })
+local force_field_entry_keys = setmetatable({}, { __mode = "k" })
+
 local function append_overlay_entry(entry_list, progress, remaining_time, start_time, color, key)
 	if type(entry_list) ~= "table" then
 		return
@@ -265,28 +269,30 @@ local function append_overlay_entry(entry_list, progress, remaining_time, start_
 	}
 end
 
+local function overlay_entry_before(a, b)
+	local a_start = a.start_time
+	local b_start = b.start_time
+
+	if a_start ~= nil and b_start ~= nil and a_start ~= b_start then
+		return a_start < b_start
+	end
+
+	local a_remaining = a.remaining_time
+	local b_remaining = b.remaining_time
+
+	if a_remaining ~= nil and b_remaining ~= nil and a_remaining ~= b_remaining then
+		return a_remaining < b_remaining
+	end
+
+	return (a.progress or 0) < (b.progress or 0)
+end
+
 local function sort_overlay_entries(entry_list)
 	if type(entry_list) ~= "table" or #entry_list <= 1 then
 		return entry_list
 	end
 
-	table.sort(entry_list, function(a, b)
-		local a_start = a.start_time
-		local b_start = b.start_time
-
-		if a_start ~= nil and b_start ~= nil and a_start ~= b_start then
-			return a_start < b_start
-		end
-
-		local a_remaining = a.remaining_time
-		local b_remaining = b.remaining_time
-
-		if a_remaining ~= nil and b_remaining ~= nil and a_remaining ~= b_remaining then
-			return a_remaining < b_remaining
-		end
-
-		return (a.progress or 0) < (b.progress or 0)
-	end)
+	table.sort(entry_list, overlay_entry_before)
 
 	return entry_list
 end
@@ -464,7 +470,12 @@ local function collect_buff_overlay_entries(buff_extension, candidate_list, entr
 			local duration = type(buff_instance.duration) == "function" and buff_instance:duration() or nil
 			local remaining_time = type(duration) == "number" and duration > 0 and progress * duration or nil
 			local start_time = type(buff_instance.start_time) == "function" and buff_instance:start_time() or nil
-			local entry_key = string.format("buff:%s:%s", template_name, tostring(buff_instance))
+			local entry_key = buff_entry_keys[buff_instance]
+
+			if not entry_key then
+				entry_key = string.format("buff:%s:%s", template_name, tostring(buff_instance))
+				buff_entry_keys[buff_instance] = entry_key
+			end
 
 			append_overlay_entry(entry_list, progress, remaining_time, start_time, nil, entry_key)
 		end
@@ -699,7 +710,12 @@ local function collect_psyker_force_field_overlay_entries(player_unit, ability_r
 		if type(remaining_duration) == "number" and remaining_duration > 0 and type(max_duration) == "number" and max_duration > 0 then
 			local progress = math.clamp01(remaining_duration / max_duration)
 			local start_time = type(gameplay_time) == "number" and gameplay_time - (max_duration - remaining_duration) or nil
-			local entry_key = string.format("force_field:%s", tostring(extension))
+			local entry_key = force_field_entry_keys[extension]
+
+			if not entry_key then
+				entry_key = string.format("force_field:%s", tostring(extension))
+				force_field_entry_keys[extension] = entry_key
+			end
 
 			append_overlay_entry(entry_list, progress, remaining_duration, start_time, nil, entry_key)
 		end
@@ -823,7 +839,12 @@ local function collect_tracked_deployable_overlay_entries(ability_row, entry_lis
 			local remaining = duration - elapsed
 
 			if remaining > 0 then
-				local entry_key = string.format("deployable:%s", tostring(unit))
+				local entry_key = data.entry_key
+
+				if not entry_key then
+					entry_key = string.format("deployable:%s", tostring(unit))
+					data.entry_key = entry_key
+				end
 
 				append_overlay_entry(entry_list, remaining / duration, remaining, start_time, nil, entry_key)
 			else
@@ -848,19 +869,23 @@ local function ability_resource_regen_progress(ability_extension, ability_id)
 	return progress
 end
 
+-- Reused by every call, so read it before the next one
+local cooldown_state = {}
+
 -- Mirrors the 1.13.2 HudElementPlayerAbility.update resource logic
 local function compute_combat_ability_cooldown_state(ability_extension, buff_extension, ability_id)
-	local state = {
-		equipped = false,
-		cooldown_progress = 0,
-		uses_charges = false,
-		has_charges_left = true,
-		in_process_of_going_on_cooldown = false,
-		force_on_cooldown = false,
-		remaining_ability_charges = 0,
-		max_ability_charges = 0,
-		max_ability_resource = 0,
-	}
+	local state = cooldown_state
+
+	state.equipped = false
+	state.cooldown_progress = 0
+	state.regen_progress = 1
+	state.uses_charges = false
+	state.has_charges_left = true
+	state.in_process_of_going_on_cooldown = false
+	state.force_on_cooldown = false
+	state.remaining_ability_charges = 0
+	state.max_ability_charges = 0
+	state.max_ability_resource = 0
 
 	if not ability_extension or not ability_extension:ability_is_equipped(ability_id) then
 		return state
@@ -873,9 +898,12 @@ local function compute_combat_ability_cooldown_state(ability_extension, buff_ext
 	local remaining_ability_charges = ability_extension:remaining_ability_charges(ability_id)
 	local max_ability_charges = ability_extension:max_ability_charges(ability_id)
 
+	local regen_progress = max_ability_resource and max_ability_resource > 0 and ability_resource_regen_progress(ability_extension, ability_id) or 1
+
 	state.remaining_ability_charges = remaining_ability_charges
 	state.max_ability_charges = max_ability_charges
 	state.max_ability_resource = max_ability_resource
+	state.regen_progress = regen_progress
 
 	state.uses_charges = max_ability_charges and max_ability_charges > 1
 	state.has_charges_left = remaining_ability_charges > 0
@@ -888,7 +916,7 @@ local function compute_combat_ability_cooldown_state(ability_extension, buff_ext
 	if should_show_empty_cooldown then
 		cooldown_progress = 0
 	elseif max_ability_resource and max_ability_resource > 0 then
-		cooldown_progress = ability_resource_regen_progress(ability_extension, ability_id)
+		cooldown_progress = regen_progress
 	else
 		cooldown_progress = state.uses_charges and 1 or 0
 	end
@@ -962,6 +990,15 @@ function M.is_state_on_cooldown(st)
 	return st.cooldown_progress ~= 1 and not st.in_process_of_going_on_cooldown or st.force_on_cooldown
 end
 
+-- Same answer as M.is_ability_in_use_or_on_cooldown, from the state and effect flag M.update already worked out
+function M.is_state_in_use_or_on_cooldown(st, effect_active)
+	if not st.equipped then
+		return false
+	end
+
+	return st.max_ability_resource > 0 and st.regen_progress < 1 or effect_active == true
+end
+
 function M.is_ability_in_use_or_on_cooldown(player_unit, combat_ability_type)
 	if not player_unit then
 		return false
@@ -981,6 +1018,8 @@ function M.is_ability_in_use_or_on_cooldown(player_unit, combat_ability_type)
 
 	return M.is_ability_effect_active(player_unit, combat_ability_type)
 end
+
+local effect_buff_candidates = {}
 
 function M.is_ability_effect_active(player_unit, combat_ability_type)
 	if not player_unit then
@@ -1003,8 +1042,10 @@ function M.is_ability_effect_active(player_unit, combat_ability_type)
 	local template_key = ability_row and ability_row.ability_template
 	local tweak_data = ability_row and ability_row.ability_template_tweak_data
 	local ability_template = template_key and AbilityTemplates[template_key]
-	local buff_candidates = collect_duration_buff_candidates(ability_template, tweak_data, {})
+	local buff_candidates = effect_buff_candidates
 
+	table.clear(buff_candidates)
+	collect_duration_buff_candidates(ability_template, tweak_data, buff_candidates)
 	append_manual_ability_group_buff_candidates(ability_row, buff_candidates)
 
 	local buff_overlay_progress = buff_extension and best_buff_overlay_progress(buff_extension, buff_candidates)
@@ -1119,7 +1160,8 @@ function M.update(player_unit, widget, opacity, definitions, combat_ability_type
 	table.clear(wanted_templates)
 
 	collect_duration_buff_candidates(ability_template, tweak_data, buff_candidates)
-	local suppress_base_cooldown_visual = ability_row and ability_row.ability_group == "psyker_shout" and combat_ability_is_active(player_unit)
+	local ability_active = combat_ability_is_active(player_unit)
+	local suppress_base_cooldown_visual = ability_row and ability_row.ability_group == "psyker_shout" and ability_active
 
 	append_manual_ability_group_buff_candidates(ability_row, buff_candidates)
 
@@ -1130,6 +1172,15 @@ function M.update(player_unit, widget, opacity, definitions, combat_ability_type
 	local relic_channel_fill = weapon_zealot_channel_bar_fill_progress(player_unit)
 	local lunge_overlay_progress = lunge_remaining_progress(player_unit)
 	local timed_overlay_progress = timed_action_remaining_progress(player_unit, ability_extension, ability_row)
+	-- what M.is_ability_effect_active works out, from the same candidates and progresses
+	local effect_active = ability_active
+		or (buff_overlay_progress or 0) > 0
+		or (psyker_force_field_overlay_progress or 0) > 0
+		or (psyker_overcharge_overlay_progress or 0) > 0
+		or (tracked_deployable_overlay_progress or 0) > 0
+		or (relic_channel_fill or 0) > 0
+		or (lunge_overlay_progress or 0) > 0
+		or (timed_overlay_progress or 0) > 0
 
 	if suppress_base_cooldown_visual then
 		cooldown_progress = 0
@@ -1274,6 +1325,8 @@ function M.update(player_unit, widget, opacity, definitions, combat_ability_type
 	end
 
 	widget.dirty = true
+
+	return st, effect_active
 end
 
 return M
