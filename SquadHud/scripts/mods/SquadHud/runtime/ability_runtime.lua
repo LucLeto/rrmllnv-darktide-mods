@@ -2,6 +2,9 @@ local M = {}
 
 local COMBAT_ABILITY_TYPE = "combat_ability"
 
+-- Reused per player (weak keys, so a player who leaves is dropped)
+local state_by_player = setmetatable({}, { __mode = "k" })
+
 local function equipped_combat_ability(player_unit)
 	if not player_unit or not Unit.alive(player_unit) then
 		return nil
@@ -142,7 +145,8 @@ local function is_effect_active(player_unit)
 	return combat_ability_component ~= nil and combat_ability_component.active == true
 end
 
-function M.combat_ability_state(player_unit)
+-- The returned table is reused for the player when one is given, so read it before the next call
+function M.combat_ability_state(player_unit, player)
 	local ability_extension, ability_settings = equipped_combat_ability(player_unit)
 
 	if not ability_extension or not ability_settings then
@@ -156,12 +160,22 @@ function M.combat_ability_state(player_unit)
 		local effect_active = is_effect_active(player_unit)
 		local state = on_cooldown and "cooldown" or effect_active and "active" or "ready"
 
-		return {
-			icon = icon,
-			progress = progress,
-			state = state,
-			is_active_or_on_cooldown = on_cooldown or effect_active,
-		}
+		local result = player and state_by_player[player]
+
+		if not result then
+			result = {}
+
+			if type(player) == "table" then
+				state_by_player[player] = result
+			end
+		end
+
+		result.icon = icon
+		result.progress = progress
+		result.state = state
+		result.is_active_or_on_cooldown = on_cooldown or effect_active
+
+		return result
 	end
 
 	return nil
