@@ -26,6 +26,19 @@ local function equipped_combat_ability(player_unit)
 	return nil
 end
 
+-- A teammate's buff extension on a client (PlayerHuskBuffExtension) holds no buffs: buffs() is always empty and
+-- current_stacks errors, so the tracking buffs can only be read from a full buff extension (the local player, and bots
+-- in solo play). Vanilla's team panel shows no teammate ability durations either.
+local function readable_buff_extension(player_unit)
+	local buff_extension = ScriptUnit.has_extension(player_unit, "buff_system")
+
+	if not buff_extension or buff_extension.__class_name == "PlayerHuskBuffExtension" then
+		return nil
+	end
+
+	return buff_extension
+end
+
 local function has_tracking_buff(buff_extension, tracking)
 	if type(tracking) == "table" then
 		for i = 1, #tracking do
@@ -83,7 +96,7 @@ end
 
 -- Mirrors the 1.13.2 HudElementPlayerAbility.update resource logic, without can_use_ability (it errors on husks), so a
 -- recharging extra charge keeps the ability on cooldown as before 1.13.0. The pause settings are read from the
--- ability itself, because ability_pause_cooldown_settings errors on husks too.
+-- ability itself, because ability_pause_cooldown_settings errors on husks too, and their buffs only where readable.
 local function cooldown_state(player_unit, ability_extension, ability_settings)
 	local max_ability_resource = ability_extension:max_ability_resource(COMBAT_ABILITY_TYPE)
 	local max_ability_charges = ability_extension:max_ability_charges(COMBAT_ABILITY_TYPE)
@@ -100,7 +113,7 @@ local function cooldown_state(player_unit, ability_extension, ability_settings)
 	local in_process_of_going_on_cooldown = false
 	local force_on_cooldown = false
 	local pause_settings = ability_settings.pause_cooldown_settings
-	local buff_extension = type(pause_settings) == "table" and ScriptUnit.has_extension(player_unit, "buff_system")
+	local buff_extension = type(pause_settings) == "table" and readable_buff_extension(player_unit)
 
 	if buff_extension then
 		local duration_tracking_buff = pause_settings.duration_tracking_buff
