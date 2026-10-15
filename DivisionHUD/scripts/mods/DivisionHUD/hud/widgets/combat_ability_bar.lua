@@ -825,6 +825,20 @@ local function collect_tracked_deployable_overlay_entries(ability_row, entry_lis
 	return entry_list
 end
 
+-- Darktide 1.13.0 replaced ability cooldowns with a regenerating resource. This is the vanilla HUD's progress
+-- towards the next charge: 1 while every charge is ready, so a recharging extra charge still counts as cooldown.
+local function ability_resource_regen_progress(ability_extension, ability_id)
+	local progress = ability_extension:get_ability_resource_regen_progress(ability_id)
+
+	-- nil for an unknown usage cost type, NaN for an empty resource pool
+	if type(progress) ~= "number" or progress ~= progress then
+		return 0
+	end
+
+	return progress
+end
+
+-- Mirrors the 1.13.2 HudElementPlayerAbility.update resource logic
 local function compute_combat_ability_cooldown_state(ability_extension, buff_extension, ability_id)
 	local state = {
 		equipped = false,
@@ -835,7 +849,7 @@ local function compute_combat_ability_cooldown_state(ability_extension, buff_ext
 		force_on_cooldown = false,
 		remaining_ability_charges = 0,
 		max_ability_charges = 0,
-		max_ability_cooldown = 0,
+		max_ability_resource = 0,
 	}
 
 	if not ability_extension or not ability_extension:ability_is_equipped(ability_id) then
@@ -844,15 +858,14 @@ local function compute_combat_ability_cooldown_state(ability_extension, buff_ext
 
 	state.equipped = true
 
-	local remaining_ability_cooldown = ability_extension:remaining_ability_cooldown(ability_id)
-	local max_ability_cooldown = ability_extension:max_ability_cooldown(ability_id)
-	local is_paused = ability_extension:is_cooldown_paused(ability_id)
+	local max_ability_resource = ability_extension:max_ability_resource(ability_id)
+	local is_paused = ability_extension:is_ability_resource_regen_paused(ability_id)
 	local remaining_ability_charges = ability_extension:remaining_ability_charges(ability_id)
 	local max_ability_charges = ability_extension:max_ability_charges(ability_id)
 
 	state.remaining_ability_charges = remaining_ability_charges
 	state.max_ability_charges = max_ability_charges
-	state.max_ability_cooldown = max_ability_cooldown
+	state.max_ability_resource = max_ability_resource
 
 	state.uses_charges = max_ability_charges and max_ability_charges > 1
 	state.has_charges_left = remaining_ability_charges > 0
@@ -864,12 +877,8 @@ local function compute_combat_ability_cooldown_state(ability_extension, buff_ext
 
 	if should_show_empty_cooldown then
 		cooldown_progress = 0
-	elseif max_ability_cooldown and max_ability_cooldown > 0 then
-		cooldown_progress = 1 - math.lerp(0, 1, remaining_ability_cooldown / max_ability_cooldown)
-
-		if cooldown_progress == 0 then
-			cooldown_progress = 1
-		end
+	elseif max_ability_resource and max_ability_resource > 0 then
+		cooldown_progress = ability_resource_regen_progress(ability_extension, ability_id)
 	else
 		cooldown_progress = state.uses_charges and 1 or 0
 	end
@@ -932,6 +941,17 @@ local function apply_ability_segment_style(seg_style, offset_x, width, rgba, opa
 	seg_style.color[4] = rgba[4] or 255
 end
 
+function M.cooldown_state(player_unit, combat_ability_type)
+	local ability_extension = ScriptUnit.has_extension(player_unit, "ability_system")
+	local buff_extension = ScriptUnit.has_extension(player_unit, "buff_system")
+
+	return compute_combat_ability_cooldown_state(ability_extension, buff_extension, combat_ability_type)
+end
+
+function M.is_state_on_cooldown(st)
+	return st.cooldown_progress ~= 1 and not st.in_process_of_going_on_cooldown or st.force_on_cooldown
+end
+
 function M.is_ability_in_use_or_on_cooldown(player_unit, combat_ability_type)
 	if not player_unit then
 		return false
@@ -943,10 +963,9 @@ function M.is_ability_in_use_or_on_cooldown(player_unit, combat_ability_type)
 		return false
 	end
 
-	local max_cooldown = ability_extension:max_ability_cooldown(combat_ability_type) or 0
-	local remaining_cooldown = ability_extension:remaining_ability_cooldown(combat_ability_type) or 0
+	local max_ability_resource = ability_extension:max_ability_resource(combat_ability_type) or 0
 
-	if max_cooldown > 0 and remaining_cooldown > 0 then
+	if max_ability_resource > 0 and ability_resource_regen_progress(ability_extension, combat_ability_type) < 1 then
 		return true
 	end
 
@@ -1050,14 +1069,14 @@ function M.update(player_unit, widget, opacity, definitions, combat_ability_type
 		return
 	end
 
-	if (st.max_ability_charges or 0) <= 0 and (st.max_ability_cooldown or 0) <= 0 then
+	if (st.max_ability_charges or 0) <= 0 and (st.max_ability_resource or 0) <= 0 then
 		widget.content.visible = false
 
 		return
 	end
 
 	local cooldown_progress = st.cooldown_progress or 0
-	local vanilla_on_cooldown = cooldown_progress ~= 1 and not st.in_process_of_going_on_cooldown or st.force_on_cooldown
+	local vanilla_on_cooldown = M.is_state_on_cooldown(st)
 	local active_partial_fill = vanilla_on_cooldown or st.in_process_of_going_on_cooldown
 	local remaining = st.remaining_ability_charges or 0
 	local max_charges = st.max_ability_charges or 0
