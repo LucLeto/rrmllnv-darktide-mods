@@ -63,6 +63,16 @@ local MANUAL_ABILITY_GROUP_BUFF_TEMPLATES = {
 	broker_punk_rage_stance = {
 		"broker_punk_rage_stance",
 	},
+	cryptic_discharge = {
+		"cryptic_discharge_attack_speed_increase",
+		"cryptic_discharge_weapon_shock_effect",
+	},
+}
+
+-- Buffs that mark an ability as active but have no duration, so their progress is a constant 1 that would paint a
+-- full ready bar. Precision Stance drains the ability resource while active, which the cooldown bar already shows.
+local UNTIMED_ABILITY_BUFFS = {
+	cryptic_precision_stance_one_charge = true,
 }
 
 local DEPLOYABLE_ABILITY_GROUP_TO_TRACKED_NAME = {
@@ -71,7 +81,7 @@ local DEPLOYABLE_ABILITY_GROUP_TO_TRACKED_NAME = {
 }
 
 local function append_unique(candidate_list, buff_template_name)
-	if type(buff_template_name) ~= "string" or buff_template_name == "" then
+	if type(buff_template_name) ~= "string" or buff_template_name == "" or UNTIMED_ABILITY_BUFFS[buff_template_name] then
 		return
 	end
 
