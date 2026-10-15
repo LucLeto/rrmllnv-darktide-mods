@@ -1,6 +1,6 @@
 local mod = get_mod("TalentUI")
 
-local pcall, tostring, type = pcall, tostring, type
+local pairs, pcall, tostring, type = pairs, pcall, tostring, type
 local string_format = string.format
 
 local MasterItems = require("scripts/backend/master_items")
@@ -8,8 +8,18 @@ local Ammo = require("scripts/utilities/ammo")
 
 local TalentUISettings = mod:io_dofile("TalentUI/scripts/mods/TalentUI/TalentUI_settings")
 
--- Per player, per slot: { item_name, icon, ammo_current, ammo_max, ammo_text }; icon is re-resolved only when the equipped item changes
+local WEAPON_ICON_PACKAGE_REFERENCE = "TalentUI_team_weapon_icon"
+local DEFAULT_WEAPON_ICON = "content/ui/materials/icons/weapons/hud/combat_blade_01"
+
+-- Per player, per slot: { item_name, icon, icon_held, ammo_current, ammo_max, ammo_text }; icon is re-resolved only when the equipped item changes
 local teammate_weapons_data = {}
+
+-- Package references on the item icons the team panels show, per HUD: hud -> icon -> load id. An item's hud_icon is
+-- loaded with its owner's loadout, and PackageSynchronizer unloads it 3 seconds after the teammate leaves or a player
+-- takes over their bot; the game crashes if the HUD's renderer still references it then, even after the panel was
+-- destroyed. So an icon stays held until its HUD has destroyed its renderer. Persistent, so a mod reload doesn't lose
+-- the load ids
+local held_weapon_icons = mod:persistent_table("held_weapon_icons")
 
 local player_previous_human_state_weapons = {}
 
@@ -58,7 +68,19 @@ local function valid_icon(icon)
 	return type(icon) == "string" and icon ~= ""
 end
 
--- Returns the slot's icon plus the name of the item it was resolved from, or nil if the slot can't be resolved yet
+-- An icon that comes with no item package can only be drawn while something else keeps it loaded
+local function resident_icon(icon)
+	return valid_icon(icon) and Application.can_get_resource("material", icon) and icon or nil
+end
+
+local function item_icon(item_name)
+	local item = MasterItems.item_exists(item_name) and MasterItems.get_item(item_name)
+
+	return item and valid_icon(item.hud_icon) and item.hud_icon or nil
+end
+
+-- Returns the slot's icon, the name of the item it was resolved from, and whether the icon is an item's hud_icon that
+-- has to be held (see held_weapon_icons), or nil if the slot can't be resolved yet
 local function get_player_weapon_by_slot(player, extensions, slot_name, item_name)
 	if not extensions or not extensions.visual_loadout then
 		return nil
@@ -78,46 +100,75 @@ local function get_player_weapon_by_slot(player, extensions, slot_name, item_nam
 	
 	local resolved_item_name = item.name
 	local icon = nil
-	
+
 	if resolved_item_name then
 		local icon_item_name = BOT_WEAPON_ICON_ITEMS[resolved_item_name]
 		if icon_item_name then
-			local icon_item = MasterItems.get_item(icon_item_name)
-			if icon_item and valid_icon(icon_item.hud_icon) then
-				icon = icon_item.hud_icon
-			end
+			icon = item_icon(icon_item_name)
 		end
-		
+
 		if not icon then
-			local master_item = MasterItems.get_item(resolved_item_name)
-			if master_item and valid_icon(master_item.hud_icon) then
-				icon = master_item.hud_icon
-			end
+			icon = item_icon(resolved_item_name)
 		end
 	end
-	
+
 	if not icon and valid_icon(item.hud_icon) then
 		icon = item.hud_icon
 	end
-	
-	if not icon then
-		local success_template, weapon_template = pcall(visual_loadout_extension.weapon_template_from_slot, visual_loadout_extension, slot_name)
-		
-		if success_template and weapon_template then
-			if valid_icon(weapon_template.hud_icon) then
-				icon = weapon_template.hud_icon
-			elseif valid_icon(weapon_template.hud_icon_small) then
-				icon = weapon_template.hud_icon_small
-			end
-		end
+
+	if icon then
+		return icon, resolved_item_name, true
 	end
-	
-	if not icon then
-		icon = "content/ui/materials/icons/weapons/hud/combat_blade_01"
+
+	local success_template, weapon_template = pcall(visual_loadout_extension.weapon_template_from_slot, visual_loadout_extension, slot_name)
+
+	if success_template and weapon_template then
+		icon = resident_icon(weapon_template.hud_icon) or resident_icon(weapon_template.hud_icon_small)
 	end
-	
-	return icon, resolved_item_name
+
+	if not icon then
+		icon = resident_icon(DEFAULT_WEAPON_ICON)
+	end
+
+	if not icon then
+		return nil
+	end
+
+	return icon, resolved_item_name, false
 end
+
+local function hold_weapon_icon(hud, icon)
+	local icons = held_weapon_icons[hud]
+
+	if not icons then
+		icons = {}
+		held_weapon_icons[hud] = icons
+	end
+
+	local load_id = icons[icon]
+
+	if not load_id then
+		load_id = Managers.package:load(icon, WEAPON_ICON_PACKAGE_REFERENCE)
+		icons[icon] = load_id
+	end
+
+	return load_id
+end
+
+-- runs after the HUD destroyed its elements and its renderer, so nothing can draw the icons any more
+mod:hook_safe("UIHud", "destroy", function(self)
+	local icons = held_weapon_icons[self]
+
+	if not icons then
+		return
+	end
+
+	held_weapon_icons[self] = nil
+
+	for _, load_id in pairs(icons) do
+		Managers.package:release(load_id)
+	end
+end)
 
 local function set_team_weapon_widget_visible(widget, visible)
 	local content = widget and widget.content
@@ -223,15 +274,14 @@ local function update_teammate_weapons(self, player, dt)
 			-- Cache the resolved item's own name, so an inventory/visual loadout mismatch is retried next frame
 			local item_name = inventory_component and inventory_component[slot_name]
 			if weapon_data.item_name ~= item_name then
-				local icon, resolved_item_name = get_player_weapon_by_slot(player, extensions, slot_name, item_name)
+				local icon, resolved_item_name, icon_held = get_player_weapon_by_slot(player, extensions, slot_name, item_name)
 				if icon then
 					weapon_data.icon = icon
+					weapon_data.icon_held = icon_held
 					weapon_data.item_name = resolved_item_name
 				end
 			end
-			
-			local has_weapon = weapon_data.icon ~= nil
-			
+
 			local show_weapon_icon = true
 			if slot_id == "primary" then
 				show_weapon_icon = show_teammate_weapon_primary_icon
@@ -239,8 +289,16 @@ local function update_teammate_weapons(self, player, dt)
 				show_weapon_icon = show_teammate_weapon_secondary_icon
 			end
 
+			local icon = weapon_data.icon
+
+			-- an item's icon is only drawn once this HUD holds it, so it can't be unloaded while the renderer uses it
+			if icon and show_weapon_icon and weapon_data.icon_held and not Managers.package:has_loaded_id(hold_weapon_icon(self._parent, icon)) then
+				icon = nil
+			end
+
+			local has_weapon = icon ~= nil
+
 			if has_weapon and show_weapon_icon then
-				local icon = weapon_data.icon
 				local icon_content = icon_widget.content
 				local needs_icon_update = false
 				
