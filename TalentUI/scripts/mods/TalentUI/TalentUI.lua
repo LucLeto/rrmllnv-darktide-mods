@@ -363,6 +363,9 @@ function mod.on_setting_changed(setting_id)
 	if mod.refresh_teammate_weapon_settings then
 		mod.refresh_teammate_weapon_settings()
 	end
+	if mod.refresh_local_ability_settings then
+		mod.refresh_local_ability_settings()
+	end
 end
 
 local function update_player_features_hook(func, self, dt, t, player, ui_renderer)

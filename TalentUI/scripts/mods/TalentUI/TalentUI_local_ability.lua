@@ -20,6 +20,9 @@ local NOTIFICATION_ICON_DEFAULT = UIHudSettings.color_tint_main_2
 local NOTIFICATION_TEXT_DEFAULT = UIHudSettings.color_tint_main_1
 local NOTIFICATION_BACKGROUND_DEFAULT = Color.terminal_grid_background(180, true)
 
+local math_ceil, math_floor = math.ceil, math.floor
+local string_format = string.format
+
 local function clone_color(color)
 	return {
 		color[1],
@@ -29,6 +32,27 @@ local function clone_color(color)
 	}
 end
 
+-- Cached local ability settings; refreshed on load and from mod.on_setting_changed
+local show_local_ability_cooldown
+local show_local_ability_active
+local show_local_ability_decimals
+local show_local_ability_ready_notification
+local cooldown_format
+local local_cooldown_font_size
+
+local function refresh_local_ability_settings()
+	show_local_ability_cooldown = mod:get("show_local_ability_cooldown")
+	show_local_ability_active = mod:get("show_local_ability_active") ~= false
+	show_local_ability_decimals = mod:get("show_local_ability_decimals") ~= false
+	show_local_ability_ready_notification = mod:get("show_local_ability_ready_notification") ~= false
+	cooldown_format = mod:get("cooldown_format")
+	local_cooldown_font_size = mod:get("local_cooldown_font_size") or TalentUISettings.local_cooldown_font_size
+end
+
+refresh_local_ability_settings()
+
+mod.refresh_local_ability_settings = refresh_local_ability_settings
+
 mod:hook(_G, "dofile", function(func, path)
 	local instance = func(path)
 	
@@ -36,7 +60,7 @@ mod:hook(_G, "dofile", function(func, path)
 		local style = table.clone(UIFontSettings.hud_body)
 		style.text_horizontal_alignment = "center"
 		style.text_vertical_alignment = "center"
-		style.font_size = mod:get("local_cooldown_font_size") or TalentUISettings.local_cooldown_font_size or TalentUISettings.teammate_ability_cooldown_font_size
+		style.font_size = local_cooldown_font_size
 		style.font_type = "machine_medium"
 		style.drop_shadow = true
 		
@@ -309,7 +333,7 @@ local function get_stimm_field_time_remaining(_self, t)
 end
 
 local function is_active_timer_enabled()
-	return mod:get("show_local_ability_cooldown") and mod:get("show_local_ability_active") ~= false
+	return show_local_ability_cooldown and show_local_ability_active
 end
 
 local area_buff_drone = ProjectileTemplates.area_buff_drone
@@ -456,129 +480,154 @@ local function get_charge_time_remaining(ability_extension, ability_type)
 	return missing_resource / regen_per_second
 end
 
-mod:hook_safe("HudElementPlayerAbility", "update", function(self)
-	if not mod:get("show_local_ability_cooldown") then
-		return
+local function format_display_text(display_kind, display_value)
+	if display_kind == "percent" then
+		return string_format("%d%%", display_value)
+	elseif display_kind == "tenths" then
+		return string_format("%.1f", display_value / 10)
 	end
-	
-	local widgets_by_name = self._widgets_by_name
-	local text_widget = widgets_by_name.talentui_cooldown_timer
-	
+
+	return string_format("%d", display_value)
+end
+
+-- Seconds as the kind and whole value the text shows, so the text is only formatted again when that value changes
+local function get_time_display(seconds)
+	if show_local_ability_decimals then
+		return "tenths", math_floor(seconds * 10 + 0.5)
+	end
+
+	return "seconds", math_ceil(seconds)
+end
+
+-- A nil display_kind hides the text. The retained widget is only marked dirty when something it shows changes
+local function set_text_widget(text_widget, display_kind, display_value, display_color)
+	local content = text_widget.content
+
+	if content._talentui_kind ~= display_kind or content._talentui_value ~= display_value then
+		content._talentui_kind = display_kind
+		content._talentui_value = display_value
+		content.text = display_kind and format_display_text(display_kind, display_value) or ""
+		text_widget.dirty = true
+	end
+
+	local text_style = text_widget.style.text
+
+	if display_color and text_style.text_color ~= display_color then
+		text_style.text_color = display_color
+		text_widget.dirty = true
+	end
+
+	-- the definition reads the font size only when the HUD is created, so a changed setting is applied here
+	if text_style.font_size ~= local_cooldown_font_size then
+		text_style.font_size = local_cooldown_font_size
+		text_widget.dirty = true
+	end
+
+	local visible = display_kind ~= nil
+
+	if text_widget.visible ~= visible then
+		text_widget.visible = visible
+		text_widget.dirty = true
+	end
+end
+
+mod:hook_safe("HudElementPlayerAbility", "update", function(self)
+	local text_widget = self._widgets_by_name.talentui_cooldown_timer
+
 	if not text_widget then
 		return
 	end
-	
+
+	if not show_local_ability_cooldown then
+		-- hides what was shown when the setting was turned off
+		if text_widget.visible then
+			set_text_widget(text_widget, nil, nil, nil)
+		end
+
+		return
+	end
+
 	local player = self._data.player
 	local player_unit = player.player_unit
 	local parent = self._parent
 	-- 1.13.0 renamed HudElementPlayerAbility._ability_id to _ability_type
 	local ability_type = self._ability_type or self._ability_id
-	
+
 	if not rawget(_G, "ALIVE") or not ALIVE[player_unit] then
-		text_widget.content.text = ""
-		text_widget.visible = false
-		text_widget.dirty = true
+		set_text_widget(text_widget, nil, nil, nil)
 		return
 	end
-	
+
 	local ability_extension = parent:get_player_extension(player, "ability_system")
 	local buff_extension = parent:get_player_extension(player, "buff_system")
-	
+
 	local progress = self._ability_progress
 	local on_cooldown = self._on_cooldown
-	local format_type = mod:get("cooldown_format")
-	local show_active = mod:get("show_local_ability_active") ~= false
-	local show_decimals = mod:get("show_local_ability_decimals") ~= false
-	local show_ready_notification = mod:get("show_local_ability_ready_notification") ~= false
-	
-	local display_text = ""
+
+	local display_kind, display_value
 	local display_color = COOLDOWN_COLOR
 	local is_active = false
 	local has_active_buff = false
-	
+
 	if ability_extension and ability_extension:ability_is_equipped(ability_type) then
 		has_active_buff = has_duration_tracking_buff(buff_extension, ability_extension:ability_pause_cooldown_settings(ability_type))
 
-		if show_active then
+		if show_local_ability_active then
 			local active_time_remaining, active_duration = get_active_time_remaining(self, ability_extension, ability_type)
 
 			if active_time_remaining then
 				is_active = true
 				display_color = ACTIVE_COLOR
 
-				if format_type == "percent" and active_duration and active_duration > 0 then
-					display_text = string.format("%d%%", math.floor(active_time_remaining / active_duration * 100))
-				elseif show_decimals then
-					display_text = string.format("%.1f", active_time_remaining)
+				if cooldown_format == "percent" and active_duration and active_duration > 0 then
+					display_kind, display_value = "percent", math_floor(active_time_remaining / active_duration * 100)
 				else
-					display_text = string.format("%.0f", math.ceil(active_time_remaining))
+					display_kind, display_value = get_time_display(active_time_remaining)
 				end
 			end
 		end
 	end
-	
+
 	-- 1.13.0 vanilla _on_cooldown is false while any charge is usable; keep treating a recharging extra charge as cooldown (pre-1.13 behavior)
 	if not on_cooldown and progress and progress ~= 1 then
 		local in_process_of_going_on_cooldown = has_active_buff and progress > 0
 		on_cooldown = not in_process_of_going_on_cooldown
 	end
-	
-	if not is_active then
-		if not on_cooldown or progress >= 1 then
-			display_text = ""
-		else
-			display_color = COOLDOWN_COLOR
-			
-			if format_type == "time" then
-				-- nil while regen is paused or Precision Stance drains its charge, which shows nothing
-				local time_remaining = get_charge_time_remaining(ability_extension, ability_type)
 
-				if time_remaining then
-					if show_decimals then
-						display_text = string.format("%.1f", time_remaining)
-					else
-						display_text = string.format("%.0f", math.ceil(time_remaining))
-					end
-				else
-					display_text = ""
-				end
-			elseif format_type == "percent" then
-				local percent = progress * 100
-				if percent >= 100 or progress >= 1 then
-					display_text = ""
-				else
-					display_text = string.format("%d%%", math.floor(percent))
-				end
-			else
-				display_text = ""
+	if not is_active and on_cooldown and progress < 1 then
+		if cooldown_format == "time" then
+			-- nil while regen is paused or Precision Stance drains its charge, which shows nothing
+			local time_remaining = get_charge_time_remaining(ability_extension, ability_type)
+
+			if time_remaining then
+				display_kind, display_value = get_time_display(time_remaining)
 			end
+		elseif cooldown_format == "percent" then
+			display_kind, display_value = "percent", math_floor(progress * 100)
 		end
 	end
-	
-	text_widget.content.text = display_text
-	text_widget.style.text.text_color = display_color
-	text_widget.visible = display_text ~= ""
-	text_widget.dirty = true
-	
+
+	set_text_widget(text_widget, display_kind, display_value, display_color)
+
 	-- vanilla's tracked stance rather than the active timer, so an ability that recharges while its effect still runs
 	-- (kills extending Volley Fire) still notifies when it is ready
 	local is_ready = not on_cooldown and progress >= 1 and not has_active_buff
-	
-	if show_ready_notification then
+
+	if show_local_ability_ready_notification then
 		if self._ability_ready_prev == nil then
 			self._ability_ready_prev = is_ready
 			self._ability_prev_on_cooldown = on_cooldown
 		else
 			local became_ready_after_cooldown = is_ready and not self._ability_ready_prev and (self._ability_prev_on_cooldown or on_cooldown)
-			
+
 			if became_ready_after_cooldown then
 				local line_color = clone_color(NOTIFICATION_LINE_DEFAULT)
 				local icon_color = clone_color(NOTIFICATION_ICON_DEFAULT)
 				local background_color = clone_color(NOTIFICATION_BACKGROUND_DEFAULT)
 				local text_color = clone_color(NOTIFICATION_TEXT_DEFAULT)
 				local line_1_text = mod:localize("local_ability_ready_notification")
-				line_1_text = string.format("{#color(%d,%d,%d)}%s{#reset()}", text_color[2], text_color[3], text_color[4], line_1_text)
-				
+				line_1_text = string_format("{#color(%d,%d,%d)}%s{#reset()}", text_color[2], text_color[3], text_color[4], line_1_text)
+
 				local notification_data = {
 					icon_size = "currency",
 					color = background_color,
@@ -587,10 +636,10 @@ mod:hook_safe("HudElementPlayerAbility", "update", function(self)
 					line_1 = line_1_text,
 					show_shine = true,
 				}
-				
+
 				Managers.event:trigger("event_add_notification_message", "custom", notification_data)
 			end
-			
+
 			self._ability_ready_prev = is_ready
 			self._ability_prev_on_cooldown = on_cooldown
 		end
